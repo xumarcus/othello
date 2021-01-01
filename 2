@@ -1,0 +1,186 @@
+import _ from 'lodash';
+import './App.css';
+import { tiles, initial } from './Const';
+import { useState, useEffect } from 'react';
+import * as O from 'fp-ts/Option';
+import { compact } from 'fp-ts/lib/Array';
+
+const COLORS = {"1": "is-black", "-1": "is-white"};
+
+const MOVES = _.range(tiles.length);
+
+class Data {
+    board: Array<number>;
+    side: number = 0;
+
+    constructor(board: Array<number>, side: number) {
+        this.board = board;
+        this.side = side;
+
+        this.count = this.count.bind(this);
+        this.filterFlips = this.filterFlips.bind(this);
+        this.canPlayMove = this.canPlayMove.bind(this);
+        this.canPlay = this.canPlay.bind(this);
+        this.fromMove = this.fromMove.bind(this);
+    }
+
+    count(side: number) {
+        return this.board.filter(e => e === side).length;
+    }
+
+    winner() {
+        return _.maxBy([1, -1], this.count);
+    }
+
+    filterFlips(l: Array<number>) {
+        const s = _.takeWhile(l, i => this.board[i] === -this.side);
+        return this.board[l[s.length]] ? s : [];
+    }
+
+    canPlayMove(i: number)  {
+        return !this.board[i] && tiles[i].some(l => this.filterFlips(l).length > 0);
+    }
+
+    canPlay() {
+        return MOVES.some(this.canPlayMove);
+    }
+
+    fromMove(move: number): O.Option<Data> {
+        if (this.board[move]) return O.none;
+        let board = _.cloneDeep(this.board);
+        const ls = tiles[move].map(this.filterFlips).filter(l => l.length);
+        if (!ls.length) return O.none;
+        for (const l of ls) {
+            board[move] = this.side;
+            for (const i of l) {
+                if (!board[i]) break;
+                board[i] = this.side;
+            }
+        }
+        for (const side of [-this.side, this.side]) {
+            const _data = new Data(board, side);
+            if (_data.canPlay()) return O.some(_data);
+        }
+        return O.some(new Data(board, 0));
+    }
+
+    allStates = (): Array<Data> => 
+        compact(MOVES.map(this.fromMove)).filter(x => x.side);
+}
+
+class UCTNode {
+    chinfo: O.Option<[Array<UCTNode>, number]> = O.none;
+    parent: O.Option<UCTNode> = O.none; 
+    _data: Data;
+    visits = 0;
+    wins = 0;
+
+    constructor(data: Data, parent: O.Option<UCTNode>) {
+        this._data = _.cloneDeep(data);
+        this.parent = parent;
+
+        this.value = this.value.bind(this);
+        this.selexp = this.selexp.bind(this);
+        this.rollout = this.rollout.bind(this);
+        this.update = this.update.bind(this);
+        this.backprog = this.backprog.bind(this);
+    }
+
+    value() {
+        if (!this.visits) return Infinity;
+        return this.wins / this.visits
+            + Math.sqrt(2 * Math.log(this.parent?.visits ?? 1) / this.visits);
+    }
+
+    can_explore() => O.map(([children, cnt]) => cnt > 0))(this.chinfo).getOrElse(true);
+
+    selexp(): Option<UCTNode> {
+        if (this.can_explore()) {
+            const children = this._data.allStates().map(e => new UCTNode(this, e));
+            this.chinfo = [children, children.length];
+            return O.some(_.sample(children));
+        } else {
+            const [children, cnt] = this.chinfo;
+            if (cnt) {
+                return _.maxBy(children.filter(this.can_explore),
+                    c => c.value())?.selexp();
+            } else {
+                this.parent?.update();
+                return this.parent?.selexp();
+            }
+        }
+    }
+
+    rollout() {
+        let dat = _.cloneDeep(this._data);
+        while (true) {
+            const pos = dat.allStates();
+            if (!pos.length) break;
+            dat = _.sample(pos);
+        }
+        return dat.winner();
+    }
+
+    backprog(s) {
+        ++this.visits;
+        if (s === this._data.side) ++this.wins;
+        this.parent?.backprog(s);
+    }
+
+    update = () => { if (!--this.numnodes) this.parent?.update(); }
+}
+
+const Header = (props) => {
+    return (
+        <div className="header">
+            <h1>{ props.children }</h1>
+            <p>Copyright 2020 Marcus Xu</p>
+        </div>
+    );
+}
+
+const Board = (props) => props.data.board.map((e, i) => {
+    if (e) {
+        const className = `circle ${COLORS[e]}`;
+        return (
+            <div className="box">
+                <div className={className}></div>
+            </div>
+        );
+    } else if (props.data.canPlayMove(i)) {
+        const handleClick = () => props.handleClick(i);
+        return (
+            <div className="box">
+                <div className="circle is-empty" onClick={handleClick}></div>
+            </div>
+        );
+    } else {
+        return <div className="box"></div>;
+    }
+});
+
+const Counter = (props) => {
+    const className = `counter ${COLORS[props.side]}`;
+    return (
+        <div className={className}>
+            <h1>{ props.data.count(props.side) }</h1>
+        </div>
+    );
+}
+
+const App = () => {
+    const [data, setData] = useState(new Data(initial, 1));
+    const handleClick = (e) => {
+        setData(data.fromMove(e));
+    } 
+    return (
+        <div className="container">
+            <Header>Othello</Header>
+            <Board data={data} handleClick={handleClick}/>
+            <Counter data={data} side={ 1}/>
+            <Counter data={data} side={-1}/>
+        </div>
+    );
+};
+
+export default App;
